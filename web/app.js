@@ -35,30 +35,97 @@ function toast(msg, ms = 2600) {
   toast._t = setTimeout(() => t.classList.remove("show"), ms);
 }
 
-const API = window.API_BASE || "";
-const token = () => { try { return localStorage.getItem("rb_token") || ""; } catch { return ""; } };
+// ------------------------------------------------------------------ lưu trữ trên thiết bị (localStorage)
+// Web chạy tĩnh trên Vercel: hồ sơ, buổi tập, phân tích AI lưu ngay trên trình duyệt của máy đang dùng.
+// Muốn chuyển sang máy khác: Cài đặt → Sao lưu (tải file .json) rồi Khôi phục trên máy kia.
+const DB_KEY = "rb_db_v1", SET_KEY = "rb_settings_v1";
+const DEFAULT_SETTINGS = { counts_per_kg: [null, null, null, null, null, null], target_finger_counts: 8000, target_grip_counts: 60000, ai_code: "" };
+function loadJSON(k, def) { try { return { ...def, ...(JSON.parse(localStorage.getItem(k)) || {}) }; } catch { return { ...def }; } }
+let DB = loadJSON(DB_KEY, { patients: [], sessions: [], ai: [], nextId: 1 });
+let SETTINGS = loadJSON(SET_KEY, DEFAULT_SETTINGS);
+function saveDB() { localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
+function saveSettings() { localStorage.setItem(SET_KEY, JSON.stringify(SETTINGS)); }
+const newId = () => DB.nextId++;
+const now = () => Date.now() / 1000;
+const clone = (x) => JSON.parse(JSON.stringify(x));
 
-function showLogin(msg) {
-  $("#login").classList.remove("hidden");
-  $("#loginErr").textContent = msg || "";
-  setTimeout(() => $("#loginPw").focus(), 50);
+function patientContext(pid, limit) {
+  const p = DB.patients.find((x) => x.id === pid);
+  if (!p) throw new Error("Không tìm thấy người tập");
+  const ss = DB.sessions.filter((s) => s.patient_id === pid).sort((a, b) => a.started - b.started).slice(-limit);
+  return {
+    nguoi_tap: { ten: p.name, nam_sinh: p.birth_year, gioi_tinh: p.gender, tay_tap: p.hand === "trai" ? "trái" : "phải", chan_doan: p.diagnosis, ghi_chu: p.notes },
+    don_vi_luc: allCalibrated() ? "kg" : "tương đối (số đếm HX711 / 1000, chưa hiệu chuẩn)",
+    buoi_tap: ss.map((s) => ({ bai_tap: s.exercise, ngay: fmtDate(s.started) + "/" + new Date(s.started * 1000).getFullYear(), diem: s.score, so_lieu: s.metrics })),
+  };
 }
 
-async function api(path, opts = {}) {
-  const o = { method: opts.method || "GET", headers: {} };
-  if (token()) o.headers["X-RB-Token"] = token();
-  if (opts.body !== undefined) { o.method = opts.method || "POST"; o.headers["Content-Type"] = "application/json"; o.body = JSON.stringify(opts.body); }
+/** gọi hàm AI trên Vercel (giữ OpenAI API key bên máy chủ) */
+async function aiCall(body) {
   let r;
-  try { r = await fetch(API + path, o); }
-  catch { throw new Error(API ? "Không kết nối được máy tính cắm board (máy tắt, mất mạng hoặc chưa chạy server.py)" : "Mất kết nối tới server"); }
+  try {
+    r = await fetch("/api/ai", { method: "POST", headers: { "Content-Type": "application/json", "X-AI-Code": SETTINGS.ai_code || "" }, body: JSON.stringify(body) });
+  } catch { throw new Error("Không gọi được trợ lý AI (kiểm tra Internet)"); }
   let data = null;
   try { data = await r.json(); } catch { /* bỏ qua */ }
-  if (r.status === 401 && data && data.login) { showLogin(); throw new Error("Cần đăng nhập"); }
-  if (!r.ok) throw new Error((data && data.detail) || `Lỗi ${r.status}`);
+  if (r.status === 404) throw new Error("Trợ lý AI chỉ chạy trên trang Vercel (hàm /api/ai)");
+  if (!r.ok) throw new Error((data && data.error) || `Lỗi AI ${r.status}`);
   return data;
 }
 
-const cmd = (c) => api("/api/cmd", { body: { cmd: c } }).catch((e) => toast(e.message));
+/** "API" cũ giờ chạy ngay trên trình duyệt: giữ nguyên các lời gọi trong phần còn lại của web */
+async function api(path, opts = {}) {
+  const m = (opts.method || (opts.body !== undefined ? "POST" : "GET")).toUpperCase();
+  const b = opts.body || {};
+  let x;
+  if (path === "/api/status") return { ...S.status, ai_ready: !!SETTINGS.ai_code, model: S.aiModel || "gpt-5.5-mini", ...SETTINGS };
+  if (path === "/api/settings") {
+    if (m === "GET") return clone(SETTINGS);
+    for (const k of Object.keys(DEFAULT_SETTINGS)) if (k in b) SETTINGS[k] = b[k];
+    saveSettings(); S.settings = clone(SETTINGS); return { ok: true };
+  }
+  if (path === "/api/cmd") return { ok: await BOARD.send(String(b.cmd || "")) };
+  if (path === "/api/patients") {
+    if (m === "GET") return DB.patients.map((p) => { const ss = DB.sessions.filter((s) => s.patient_id === p.id); return { ...p, n_sessions: ss.length, last_session: ss.length ? Math.max(...ss.map((s) => s.started)) : null }; }).sort((a, c) => a.name.localeCompare(c.name, "vi"));
+    if (!String(b.name || "").trim()) throw new Error("Cần nhập tên");
+    const p = { id: newId(), name: String(b.name).trim(), birth_year: Number(b.birth_year) || null, gender: b.gender || "", hand: b.hand || "phai", diagnosis: b.diagnosis || "", notes: b.notes || "", created: now() };
+    DB.patients.push(p); saveDB(); return { id: p.id };
+  }
+  if ((x = path.match(/^\/api\/patients\/(\d+)$/))) {
+    const id = Number(x[1]);
+    if (m === "DELETE") { DB.patients = DB.patients.filter((p) => p.id !== id); DB.sessions = DB.sessions.filter((s) => s.patient_id !== id); DB.ai = DB.ai.filter((r) => r.patient_id !== id); saveDB(); return { ok: true }; }
+    const p = DB.patients.find((q) => q.id === id); if (!p) throw new Error("Không tìm thấy người tập");
+    Object.assign(p, { name: String(b.name || p.name).trim(), birth_year: Number(b.birth_year) || null, gender: b.gender || "", hand: b.hand || "phai", diagnosis: b.diagnosis || "", notes: b.notes || "" });
+    saveDB(); return { ok: true };
+  }
+  if ((x = path.match(/^\/api\/patients\/(\d+)\/sessions$/))) return clone(DB.sessions.filter((s) => s.patient_id === Number(x[1])).sort((a, c) => a.started - c.started));
+  if ((x = path.match(/^\/api\/patients\/(\d+)\/ai$/))) return clone(DB.ai.filter((r) => r.patient_id === Number(x[1])).sort((a, c) => c.created - a.created).slice(0, 30));
+  if (path === "/api/sessions") {
+    if (!b.patient_id) throw new Error("Chưa chọn người tập");
+    const s = { id: newId(), patient_id: Number(b.patient_id), exercise: b.exercise, started: b.started || now(), ended: b.ended || now(), score: b.score, metrics: b.metrics || {}, demo: 0 };
+    DB.sessions.push(s); saveDB(); return { id: s.id };
+  }
+  if ((x = path.match(/^\/api\/sessions\/(\d+)$/))) { DB.sessions = DB.sessions.filter((s) => s.id !== Number(x[1])); saveDB(); return { ok: true }; }
+  if (path === "/api/ai/analyze") {
+    const ctx = patientContext(Number(b.patient_id), 40);
+    if (!ctx.buoi_tap.length) throw new Error("Người tập chưa có buổi tập nào để phân tích");
+    const r = await aiCall({ kind: "analyze", context: ctx });
+    S.aiModel = r.model;
+    const rep = { id: newId(), patient_id: Number(b.patient_id), created: now(), model: r.model, kind: "phan_tich", question: null, text: r.text };
+    DB.ai.push(rep); saveDB(); return rep;
+  }
+  if (path === "/api/ai/chat") {
+    const ctx = patientContext(Number(b.patient_id), 20);
+    const msgs = (b.messages || []).filter((q) => q.role === "user" || q.role === "assistant").slice(-12);
+    const r = await aiCall({ kind: "chat", context: ctx, messages: msgs });
+    S.aiModel = r.model;
+    DB.ai.push({ id: newId(), patient_id: Number(b.patient_id), created: now(), model: r.model, kind: "hoi_dap", question: msgs.at(-1)?.content, text: r.text }); saveDB();
+    return r;
+  }
+  throw new Error("Không hỗ trợ: " + path);
+}
+
+const cmd = (c) => BOARD.send(c);
 
 function fingerNames() {
   const p = S.patients.find((x) => x.id === S.pid);
@@ -150,29 +217,135 @@ function lineChart(el, series, opt = {}) {
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}">${g}</svg>${legend}`;
 }
 
-// ------------------------------------------------------------------ luồng dữ liệu trực tiếp (SSE)
-function connectStream() {
-  if (S.es) S.es.close();
-  const es = new EventSource(API + "/api/stream" + (token() ? `?token=${encodeURIComponent(token())}` : ""));
-  S.es = es;
-  es.addEventListener("frame", (e) => { S.frame = JSON.parse(e.data); S.frames++; scheduleLive(); });
-  es.addEventListener("ev", (e) => {
-    const ev = JSON.parse(e.data);
-    S.evListeners.forEach((f) => f(ev));
+// ------------------------------------------------------------------ kết nối board: Bluetooth LE hoặc cáp USB (Web Serial)
+const BLE_SVC = "6e520001-7265-6861-6262-6f6172643031";
+const BLE_DATA = "6e520002-7265-6861-6262-6f6172643031";
+const BLE_EVT = "6e520003-7265-6861-6262-6f6172643031";
+const BLE_CMD = "6e520004-7265-6861-6262-6f6172643031";
+
+const BOARD = {
+  kind: null, dev: null, cmdChr: null, port: null, writer: null, reader: null, queue: Promise.resolve(), userClosed: false,
+
+  setStatus(o) { S.status = { ...S.status, ...o }; renderConn(); },
+
+  onFrame(f) { f.rx = Date.now() / 1000; S.frame = f; S.frames++; if (S.status.hx !== f.hx) this.setStatus({ hx: f.hx }); scheduleLive(); },
+  onEvent(ev) {
+    S.evListeners.forEach((fn) => fn(ev));
     if (ev.ev === "tare" && ev.state === "done") toast("✔ Đã đặt 0 cho 6 load cell");
-  });
-  es.addEventListener("status", (e) => { S.status = JSON.parse(e.data); renderConn(); });
-  es.onerror = () => { S.status = { connected: false, message: API ? "Không nối được về máy tính cắm board" : "Mất kết nối tới server" }; renderConn(); };
+    if (ev.ev === "ble_off") toast("Board đang TẮT Bluetooth do sụt áp nguồn — dùng cáp USB hoặc sửa nguồn (xem hướng dẫn)", 7000);
+  },
+
+  async connectBLE() {
+    if (!navigator.bluetooth) return toast("Trình duyệt này không hỗ trợ Bluetooth. Dùng Chrome hoặc Edge (Android, Windows, macOS).", 6000);
+    await this.disconnect();
+    try {
+      const dev = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: "REHABBOARD" }, { services: [BLE_SVC] }], optionalServices: [BLE_SVC] });
+      this.dev = dev; this.kind = "ble"; this.userClosed = false;
+      dev.addEventListener("gattserverdisconnected", () => this.onBleDrop());
+      await this.openBLE();
+    } catch (e) { if (e.name !== "NotFoundError") toast("Không kết nối được Bluetooth: " + e.message, 6000); this.setStatus({ connected: false, message: "Chưa kết nối board" }); }
+  },
+  async openBLE() {
+    this.setStatus({ connected: false, message: "Đang nối Bluetooth…" });
+    const gatt = await this.dev.gatt.connect();
+    const svc = await gatt.getPrimaryService(BLE_SVC);
+    const data = await svc.getCharacteristic(BLE_DATA), evt = await svc.getCharacteristic(BLE_EVT);
+    this.cmdChr = await svc.getCharacteristic(BLE_CMD);
+    data.addEventListener("characteristicvaluechanged", (e) => this.onFrame(parseFrame(e.target.value)));
+    evt.addEventListener("characteristicvaluechanged", (e) => { try { this.onEvent(JSON.parse(new TextDecoder().decode(e.target.value))); } catch { /* bỏ qua */ } });
+    await data.startNotifications();
+    await evt.startNotifications();
+    this.setStatus({ connected: true, port: "Bluetooth", kind: "ble", message: `Đã nối Bluetooth (${this.dev.name || "REHABBOARD"})` });
+    toast("✔ Đã kết nối board qua Bluetooth");
+  },
+  async onBleDrop() {
+    this.cmdChr = null;
+    if (this.userClosed || this.kind !== "ble") return;
+    this.setStatus({ connected: false, message: "Mất Bluetooth — đang nối lại…" });
+    for (let k = 0; k < 5 && !this.userClosed; k++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try { await this.openBLE(); return; } catch { /* thử lại */ }
+    }
+    this.setStatus({ connected: false, message: "Mất Bluetooth. Bấm Kết nối lại." });
+  },
+
+  async connectUSB() {
+    if (!navigator.serial) return toast("Trình duyệt này không hỗ trợ cáp USB (Web Serial). Dùng Chrome/Edge trên máy tính.", 6000);
+    await this.disconnect();
+    try {
+      const port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x1a86 }, { usbVendorId: 0x303a }, { usbVendorId: 0x10c4 }] });
+      await port.open({ baudRate: 115200 });
+      try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch { /* không sao */ }
+      this.port = port; this.kind = "usb"; this.userClosed = false;
+      this.writer = port.writable.getWriter();
+      this.setStatus({ connected: true, port: "USB", kind: "usb", message: "Đã nối cáp USB" });
+      toast("✔ Đã kết nối board qua cáp USB");
+      this.readUSB();
+    } catch (e) { if (e.name !== "NotFoundError") toast("Không mở được cổng USB: " + e.message + " (đóng Arduino IDE/Serial Monitor)", 7000); }
+  },
+  async readUSB() {
+    const dec = new TextDecoder(); let buf = "";
+    try {
+      this.reader = this.port.readable.getReader();
+      for (;;) {
+        const { value, done } = await this.reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+          if (!line.startsWith("{")) continue;
+          let o; try { o = JSON.parse(line); } catch { continue; }
+          if ("t" in o && "f" in o) this.onFrame(o); else this.onEvent(o);
+        }
+      }
+    } catch { /* rút cáp */ }
+    if (!this.userClosed) { this.setStatus({ connected: false, message: "Mất kết nối cáp USB" }); this.kind = null; }
+  },
+
+  async disconnect() {
+    this.userClosed = true;
+    try { if (this.dev && this.dev.gatt.connected) this.dev.gatt.disconnect(); } catch { /* bỏ qua */ }
+    try { if (this.reader) { await this.reader.cancel(); this.reader.releaseLock(); } } catch { /* bỏ qua */ }
+    try { if (this.writer) this.writer.releaseLock(); } catch { /* bỏ qua */ }
+    try { if (this.port) await this.port.close(); } catch { /* bỏ qua */ }
+    Object.assign(this, { kind: null, dev: null, cmdChr: null, port: null, writer: null, reader: null });
+    this.setStatus({ connected: false, port: null, kind: null, message: "Chưa kết nối board" });
+  },
+
+  /** gửi lệnh (TARE, BEEP, LED…) — xếp hàng vì Bluetooth chỉ ghi được từng lệnh một */
+  send(c) {
+    const job = this.queue.then(async () => {
+      try {
+        if (this.kind === "ble" && this.cmdChr) { await this.cmdChr.writeValue(new TextEncoder().encode(c)); return true; }
+        if (this.kind === "usb" && this.writer) { await this.writer.write(new TextEncoder().encode(c + "\n")); return true; }
+      } catch (e) { console.warn("gửi lệnh lỗi", c, e); }
+      return false;
+    });
+    this.queue = job.catch(() => false);
+    return job;
+  },
+};
+
+/** khung Bluetooth 34 byte (xem đầu Firmwave/REHABBOARD_WEB) -> cùng dạng JSON như cáp USB */
+function parseFrame(dv) {
+  const f = [];
+  for (let i = 0; i < 6; i++) { const v = dv.getInt32(4 + i * 4, true); f.push(v === -2147483648 ? null : v); }
+  const fl = dv.getUint8(32);
+  return { t: dv.getUint32(0, true), f, enc: dv.getInt16(28, true), pot: dv.getUint16(30, true), sw: fl & 1, b9: (fl >> 1) & 1, g: [0, 1, 2, 3].map((k) => (fl >> (2 + k)) & 1), hx: dv.getUint8(33) };
 }
+
 setInterval(() => { $("#liveHz").textContent = S.frames ? `${S.frames} khung/giây` : ""; S.frames = 0; }, 1000);
 
 function renderConn() {
   const st = S.status, c = $("#conn");
   if ($("#stBoard")) $("#stBoard").classList.toggle("done", !!st.connected);
-  c.className = "conn " + (st.connected ? (st.demo ? "demo" : "on") : "off");
-  $("#connText").textContent = st.message === "Không nối được về máy tính cắm board" ? "Máy tính cắm board offline" : st.connected ? (st.demo ? "Mô phỏng (bệnh nhân ảo)" : `Board ${st.port} · HX711 ${st.hx ?? "?"}/6`) : "Chưa kết nối board";
+  c.className = "conn " + (st.connected ? "on" : "off");
+  $("#connText").textContent = st.connected ? `${st.kind === "ble" ? "Bluetooth" : "USB"} · HX711 ${st.hx ?? "?"}/6` : (st.message || "Chưa kết nối board");
   c.title = st.message || "";
   const ss = $("#setStatus"); if (ss) ss.textContent = st.message || "";
+  $$(".btn-connect").forEach((b) => b.classList.toggle("hidden", !!st.connected));
+  $$(".btn-disconnect").forEach((b) => b.classList.toggle("hidden", !st.connected));
 }
 
 let liveQueued = false;
@@ -800,7 +973,7 @@ $("#sessTable").addEventListener("click", async (e) => {
 
 // ------------------------------------------------------------------ trợ lý AI
 function renderAI() {
-  $("#aiModel").textContent = `Model: ${S.status.model || S.settings?.openai_model || "gpt-5.5-mini"} · ${S.status.ai_ready ? "đã có API key" : "CHƯA có API key (vào Cài đặt)"}`;
+  $("#aiModel").textContent = `Model: ${S.aiModel || "gpt-5.5-mini"} (cấu hình trên Vercel) · ${SETTINGS.ai_code ? "đã nhập mã truy cập AI" : "CHƯA nhập mã truy cập AI (vào Cài đặt)"}`;
   const last = S.ai.find((r) => r.kind === "phan_tich");
   if (last && !$("#aiReport").dataset.fresh) $("#aiReport").innerHTML = `<div class="muted small">Phân tích lúc ${fmtDate(last.created)}</div>${md(last.text)}`;
   $("#aiHistory").innerHTML = S.ai.length ? S.ai.map((r) => `<details class="hist-item"><summary>${fmtDate(r.created)} · ${r.kind === "phan_tich" ? "Phân tích" : "Hỏi: " + esc((r.question || "").slice(0, 60))}</summary><div class="md">${md(r.text)}</div></details>`).join("") : `<p class="muted">Chưa có.</p>`;
@@ -841,18 +1014,13 @@ $$(".chip").forEach((c) => c.addEventListener("click", () => sendChat(c.textCont
 
 // ------------------------------------------------------------------ cài đặt
 async function loadSettings() {
-  S.settings = await api("/api/settings");
+  S.settings = clone(SETTINGS);
   const st = S.settings;
-  $("#setPort").innerHTML = `<option value="auto">Tự tìm (khuyên dùng)</option>` + st.ports.map((p) => `<option value="${esc(p.device)}">${esc(p.device)} — ${esc(p.desc)}</option>`).join("");
-  $("#setPort").value = st.serial_port || "auto";
-  $("#setModel").value = st.openai_model || "gpt-5.5-mini";
-  $("#setKey").value = "";
-  $("#keyInfo").innerHTML = st.openai_key_env ? "Đang dùng khoá từ biến môi trường OPENAI_API_KEY." : st.openai_key_set ? `Đã lưu khoá: <code>${esc(st.openai_key_hint)}</code> · <a id="clearKey">xoá khoá</a>` : "Chưa có khoá.";
+  $("#setCode").value = st.ai_code || "";
   $("#setTF").value = st.target_finger_counts; $("#setTG").value = st.target_grip_counts;
-  if (st.remote) { $("#setAccess").value = ""; $("#setAccess").disabled = true; $("#remoteInfo").textContent = "Bạn đang mở từ xa — chỉ đổi được mật khẩu khi ngồi ở máy tính cắm board."; }
-  else { $("#setAccess").disabled = false; $("#setAccess").value = st.access_password || ""; $("#remoteInfo").innerHTML = "Trang Vercel: mở bằng điện thoại / máy khác, nhập mật khẩu này. Đổi mật khẩu thì mọi máy đã đăng nhập phải đăng nhập lại."; }
   S.cal = [...(st.counts_per_kg || [null, null, null, null, null, null])];
   $("#calTable").innerHTML = `<table class="small"><tr><th>Kênh</th><th>Đang đọc</th><th>Số đếm / kg</th><th></th></tr>${[0, 1, 2, 3, 4, 5].map((i) => `<tr><td>${i === 5 ? "Bóp tay" : `Phím ${i + 1} · ${fingerNames()[i]}`}</td><td id="calLive${i}">–</td><td id="calVal${i}">${S.cal[i] ? Math.round(S.cal[i]) : "chưa"}</td><td><button class="btn ghost" data-cal="${i}">Hiệu chuẩn</button> <button class="btn ghost" data-uncal="${i}">Xoá</button></td></tr>`).join("")}</table>`;
+  $("#dbInfo").textContent = `Trên máy này: ${DB.patients.length} người tập · ${DB.sessions.length} buổi tập · ${DB.ai.length} lần hỏi AI.`;
   renderConn();
 }
 function renderCalLive() { for (let i = 0; i < 6; i++) { const e = $(`#calLive${i}`); if (e && S.frame) e.textContent = S.frame.f[i] == null ? "—" : Math.round(forceOf(S.frame, i)); } }
@@ -865,17 +1033,27 @@ $("#calTable").addEventListener("click", (e) => {
   }
   if (b.dataset.uncal) { S.cal[Number(b.dataset.uncal)] = null; $(`#calVal${b.dataset.uncal}`).textContent = "chưa"; }
 });
-document.addEventListener("click", async (e) => {
-  if (e.target.id === "clearKey") { await api("/api/settings", { body: { clear_openai_key: true } }); toast("Đã xoá khoá"); loadSettings(); refreshStatus(); }
-});
 $("#btnSaveSettings").addEventListener("click", async () => {
-  const body = {
-    serial_port: $("#setPort").value, openai_model: $("#setModel").value.trim() || "gpt-5.5-mini",
-    target_finger_counts: Number($("#setTF").value) || 8000, target_grip_counts: Number($("#setTG").value) || 60000, counts_per_kg: S.cal,
-  };
-  const key = $("#setKey").value.trim(); if (key) body.openai_api_key = key;
-  if (!$("#setAccess").disabled && $("#setAccess").value.trim()) body.access_password = $("#setAccess").value.trim();
+  const body = { ai_code: $("#setCode").value.trim(), target_finger_counts: Number($("#setTF").value) || 8000, target_grip_counts: Number($("#setTG").value) || 60000, counts_per_kg: S.cal };
   try { await api("/api/settings", { body }); toast("✔ Đã lưu cài đặt"); await loadSettings(); await refreshStatus(); } catch (err) { toast(err.message); }
+});
+$("#btnBackup").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify({ app: "rehabboard", version: 1, exported: new Date().toISOString(), db: DB, settings: { ...SETTINGS, ai_code: "" } }, null, 1)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `rehabboard-saoluu-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+});
+$("#fileRestore").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const o = JSON.parse(await f.text());
+    if (o.app !== "rehabboard" || !o.db || !Array.isArray(o.db.patients)) throw new Error("File không phải bản sao lưu RehabBoard");
+    if (!confirm(`Khôi phục ${o.db.patients.length} người tập, ${o.db.sessions.length} buổi tập? Dữ liệu hiện có trên máy này sẽ bị THAY THẾ.`)) return;
+    DB = o.db; saveDB();
+    if (o.settings) { SETTINGS = { ...DEFAULT_SETTINGS, ...o.settings, ai_code: SETTINGS.ai_code }; saveSettings(); }
+    await loadPatients(); await refreshPatientData(); await loadSettings(); toast("✔ Đã khôi phục dữ liệu");
+  } catch (err) { toast(err.message, 5000); } finally { e.target.value = ""; }
 });
 
 async function refreshStatus() { const st = await api("/api/status"); S.status = { ...S.status, ...st }; renderConn(); }
@@ -888,22 +1066,15 @@ $("#btnLedTest").addEventListener("click", async () => {
 });
 
 // ------------------------------------------------------------------ khởi động
-$("#loginForm").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  try {
-    const r = await api("/api/login", { body: { password: $("#loginPw").value } });
-    localStorage.setItem("rb_token", r.token);
-    $("#login").classList.add("hidden");
-    $("#loginPw").value = "";
-    init();
-  } catch (err) { $("#loginErr").textContent = err.message; }
-});
+$$(".btn-ble").forEach((b) => b.addEventListener("click", () => BOARD.connectBLE()));
+$$(".btn-usb").forEach((b) => b.addEventListener("click", () => BOARD.connectUSB()));
+$$(".btn-disconnect").forEach((b) => b.addEventListener("click", () => BOARD.disconnect()));
+if (!navigator.bluetooth) $$(".btn-ble").forEach((b) => (b.title = "Trình duyệt không hỗ trợ Web Bluetooth — dùng Chrome/Edge"));
 
 async function init() {
-  try { await api("/api/status"); } catch (err) { if (err.message !== "Cần đăng nhập") toast(err.message, 5000); if (err.message === "Cần đăng nhập") return; }
-  connectStream();
+  S.status = { connected: false, message: "Chưa kết nối board — bấm 🔵 Bluetooth hoặc 🔌 USB" };
   try {
-    S.settings = await api("/api/settings");
+    S.settings = clone(SETTINGS);
     await refreshStatus();
     await loadPatients();
     await refreshPatientData();

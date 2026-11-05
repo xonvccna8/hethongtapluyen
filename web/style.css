@@ -260,3 +260,5 @@ select:focus, input:focus, textarea:focus { outline: 2px solid #9cc4f5; border-c
 
 .login { position: fixed; inset: 0; background: rgba(16, 34, 58, .55); backdrop-filter: blur(4px); display: grid; place-items: center; z-index: 40; padding: 16px; }
 .login-card { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 10px; }
+
+.top-right .btn { white-space: nowrap; }

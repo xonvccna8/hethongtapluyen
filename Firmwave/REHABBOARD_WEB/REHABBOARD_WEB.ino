@@ -1,5 +1,14 @@
-// REHABBOARD AI — FIRMWARE CHO WEB (WebApp/server.py)
+// REHABBOARD AI — FIRMWARE CHO WEB (kết nối Bluetooth LE với trang web trên Vercel)
 //
+// BLUETOOTH LE (tên thiết bị "REHABBOARD"), dịch vụ 6e520001-7265-6861-6262-6f6172643031:
+//   ...0002 DATA  (notify, 20 lần/giây) khung nhị phân little-endian 34 byte:
+//         uint32 t_ms | int32 f[6] (N1..N5, BOP; INT32_MIN = thiếu HX711) | int16 enc | uint16 pot |
+//         uint8 cờ (bit0 nút núm, bit1 9 lỗ, bit2..5 nút game 1..4) | uint8 số HX711
+//   ...0003 EVENT (notify) chuỗi JSON sự kiện / trả lời lệnh (giống dòng JSON trên Serial bên dưới)
+//   ...0004 CMD   (write)  chuỗi lệnh: TARE, BEEP <ms>, LED <1-4> <0|1>, LEDS AUTO, ENC0, PING
+//   Web Bluetooth (Chrome/Edge) tự thương lượng MTU lớn nên khung 34 byte gửi trọn 1 gói.
+//
+// Cổng USB Serial 115200 vẫn gửi cùng dữ liệu dạng JSON (để kiểm tra bằng Serial Monitor):
 // Giống REHABBOARD_TEST_TONGHOP (màn TFT vẫn hiện bảng tổng hợp) nhưng Serial 115200 gửi JSON để web đọc:
 //   Khung dữ liệu 20 lần/giây:
 //     {"t":ms,"f":[N1,N2,N3,N4,N5,BOP],"enc":vị_trí,"sw":0|1,"pot":0-4095,"b9":0|1,"g":[0|1 x4],"hx":số_HX711}
@@ -22,6 +31,9 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <U8g2_for_Adafruit_GFX.h>
+#include <NimBLEDevice.h>
+#include <stdarg.h>
+#include "esp_system.h"
 
 // ---------------- Chân ----------------
 const int HX_SCK = 5;
@@ -108,6 +120,71 @@ int potRaw = 0;
 bool ledByWeb = false;            // true: LED game do web bật/tắt (game phản xạ)
 unsigned long beepUntil = 0;      // còi kêu tới thời điểm này (lệnh BEEP)
 String cmdBuf;
+
+// ---------------- Bluetooth LE ----------------
+#define BLE_NAME "REHABBOARD"
+#define BLE_SVC_UUID "6e520001-7265-6861-6262-6f6172643031"
+#define BLE_DATA_UUID "6e520002-7265-6861-6262-6f6172643031"
+#define BLE_EVT_UUID "6e520003-7265-6861-6262-6f6172643031"
+#define BLE_CMD_UUID "6e520004-7265-6861-6262-6f6172643031"
+NimBLEServer* bleServer = nullptr;
+NimBLECharacteristic *bleData = nullptr, *bleEvt = nullptr, *bleCmd = nullptr;
+portMUX_TYPE bleMux = portMUX_INITIALIZER_UNLOCKED;
+char bleCmdBuf[48];
+volatile bool bleCmdPending = false;
+
+bool bleConnected() { return bleServer && bleServer->getConnectedCount() > 0; }
+bool bleSkipped = false;  // lần trước sụt áp khi bật Bluetooth -> lần này chỉ chạy USB
+
+// Callback chạy trong task NimBLE: chỉ chép lệnh, loop() mới thực hiện (đặt 0 / vẽ TFT không an toàn ở đây)
+class BleCmdCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+    const NimBLEAttValue v = c->getValue();
+    const size_t n = v.length() < sizeof(bleCmdBuf) - 1 ? v.length() : sizeof(bleCmdBuf) - 1;
+    portENTER_CRITICAL(&bleMux);
+    memcpy(bleCmdBuf, v.data(), n);
+    bleCmdBuf[n] = '\0';
+    bleCmdPending = true;
+    portEXIT_CRITICAL(&bleMux);
+  }
+} bleCmdCallbacks;
+
+void startBle() {
+  NimBLEDevice::init(BLE_NAME);
+  // Công suất phát thấp (0 dBm, đủ vài mét): bật sóng ở mức cao làm sụt áp nguồn USB -> board tự khởi động lại
+  NimBLEDevice::setPower(-6);
+  NimBLEDevice::setMTU(185);
+  bleServer = NimBLEDevice::createServer();
+  bleServer->advertiseOnDisconnect(true);
+  NimBLEService* svc = bleServer->createService(BLE_SVC_UUID);
+  bleData = svc->createCharacteristic(BLE_DATA_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  bleEvt = svc->createCharacteristic(BLE_EVT_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  bleCmd = svc->createCharacteristic(BLE_CMD_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  bleCmd->setCallbacks(&bleCmdCallbacks);
+  bleEvt->setValue("{}");
+  NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+  adv->enableScanResponse(true);
+  adv->setName(BLE_NAME);
+  adv->addServiceUUID(BLE_SVC_UUID);
+  adv->setPreferredParams(12, 24);  // x1,25 ms: 15-30 ms, đủ cho 20 khung/giây
+  adv->start();
+}
+
+// Gửi 1 dòng JSON: ra Serial và (nếu web đang nối) qua BLE EVENT
+void emitf(const char* fmt, ...) {
+  char buf[160];
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  if (n < 0) return;
+  if (n >= (int)sizeof(buf)) n = sizeof(buf) - 1;
+  Serial.println(buf);
+  if (bleConnected()) {
+    bleEvt->setValue((const uint8_t*)buf, n);
+    bleEvt->notify();
+  }
+}
 
 // ---------------- Encoder ----------------
 void IRAM_ATTR encoderISR() {
@@ -226,7 +303,7 @@ void hxUpdate() {
     for (int i = 0; i < NUM_CELLS; i++) {
       if (cellPresent[i] && digitalRead(HX_DT[i]) == HIGH) {
         cellPresent[i] = false;
-        Serial.printf("[LOI] HX711 %s (DT GPIO%d) ngung tra du lieu - kiem tra day\n", CELL_LABEL[i], HX_DT[i]);
+        emitf("{\"ev\":\"hx_lost\",\"ch\":\"%s\",\"gpio\":%d}", CELL_LABEL[i], HX_DT[i]);
       }
     }
     lastHxRead = millis();
@@ -315,13 +392,13 @@ void drawStaticLayout() {
 long shownForce[NUM_CELLS];
 bool shownPresent[NUM_CELLS];
 long shownEnc = LONG_MIN;
-int shownSw = -1, shownS1 = -1, shownPot = -1, shownHx = -1;
+int shownSw = -1, shownS1 = -1, shownPot = -1, shownHx = -1, shownBle = -1;
 int shownGame[NUM_GAME] = {-1, -1, -1, -1};
 
 void resetShown() {
   for (int i = 0; i < NUM_CELLS; i++) { shownForce[i] = LONG_MIN; shownPresent[i] = !cellPresent[i]; }
   shownEnc = LONG_MIN;
-  shownSw = shownS1 = shownPot = shownHx = -1;
+  shownSw = shownS1 = shownPot = shownHx = shownBle = -1;
   for (int i = 0; i < NUM_GAME; i++) shownGame[i] = -1;
 }
 
@@ -388,6 +465,12 @@ void updateDisplay() {
     snprintf(buf, sizeof(buf), "HX711: %d/6 OK ", hx);
     textAt(COL2_X, 152, buf, hx == NUM_CELLS ? ILI9341_GREEN : ILI9341_RED);
   }
+  int ble = bleConnected() ? 1 : 0;
+  if (ble != shownBle) {
+    shownBle = ble;
+    if (bleSkipped) textAt(COL2_X, 166, "BLE: TAT (sut ap)", ILI9341_RED);
+    else textAt(COL2_X, 166, ble ? "BLE: DA KET NOI  " : "BLE: cho ket noi ", ble ? ILI9341_GREEN : ILI9341_YELLOW);
+  }
 
   for (int i = 0; i < NUM_GAME; i++) {
     if (gameState[i] == shownGame[i]) continue;
@@ -416,12 +499,12 @@ bool debounce(int pin, int& stable, unsigned long& changeMs) {
 }
 
 void runTare() {
-  Serial.println("{\"ev\":\"tare\",\"state\":\"start\"}");
+  emitf("{\"ev\":\"tare\",\"state\":\"start\"}");
   drawTitle("ĐANG ĐẶT 0 LOAD CELL — KHÔNG CHẠM");
   hxTare();
   drawStaticLayout();
   resetShown();
-  Serial.println("{\"ev\":\"tare\",\"state\":\"done\"}");
+  emitf("{\"ev\":\"tare\",\"state\":\"done\"}");
 }
 
 void handleButtons() {
@@ -430,7 +513,7 @@ void handleButtons() {
   if (r != swLastRead) { swLastRead = r; swChangeMs = millis(); }
   if (millis() - swChangeMs > 30 && r != swStable) {
     swStable = r;
-    Serial.printf("{\"ev\":\"sw\",\"v\":%d,\"t\":%lu}\n", r == LOW ? 1 : 0, millis());
+    emitf("{\"ev\":\"sw\",\"v\":%d,\"t\":%lu}", r == LOW ? 1 : 0, millis());
     if (r == LOW) {
       swPressMs = millis();
       swHoldDone = false;
@@ -447,7 +530,7 @@ void handleButtons() {
     bool p = (s1State == LOW);
     if (millis() >= beepUntil) digitalWrite(BUZZER_PIN, p ? BUZZER_ON : BUZZER_OFF);
     if (p) s1Count++;
-    Serial.printf("{\"ev\":\"b9\",\"v\":%d,\"t\":%lu}\n", p ? 1 : 0, millis());
+    emitf("{\"ev\":\"b9\",\"v\":%d,\"t\":%lu}", p ? 1 : 0, millis());
   }
 
   // Game: nút n -> LED n
@@ -456,12 +539,33 @@ void handleButtons() {
       bool p = (gameState[i] == LOW);
       if (!ledByWeb) digitalWrite(GAME_LED[i], p ? LED_ON : LED_OFF);
       if (p) gameCount[i]++;
-      Serial.printf("{\"ev\":\"game\",\"i\":%d,\"v\":%d,\"t\":%lu}\n", i + 1, p ? 1 : 0, millis());
+      emitf("{\"ev\":\"game\",\"i\":%d,\"v\":%d,\"t\":%lu}", i + 1, p ? 1 : 0, millis());
     }
   }
 }
 
 // ---------------- Serial JSON cho web ----------------
+void bleFrame() {
+  if (!bleConnected()) return;
+  uint8_t b[34];
+  uint32_t t = millis();
+  memcpy(b, &t, 4);
+  for (int i = 0; i < NUM_CELLS; i++) {
+    int32_t v = cellPresent[i] ? (int32_t)cellDelta[i] : INT32_MIN;
+    memcpy(b + 4 + i * 4, &v, 4);
+  }
+  int16_t e = (int16_t)constrain(readEncoder(), -32768, 32767);
+  uint16_t pv = (uint16_t)potRaw;
+  memcpy(b + 28, &e, 2);
+  memcpy(b + 30, &pv, 2);
+  uint8_t fl = (swStable == LOW ? 1 : 0) | (s1State == LOW ? 2 : 0);
+  for (int i = 0; i < NUM_GAME; i++) if (gameState[i] == LOW) fl |= (4 << i);
+  b[32] = fl;
+  b[33] = (uint8_t)presentCount();
+  bleData->setValue(b, sizeof(b));
+  bleData->notify();
+}
+
 void printFrame() {
   Serial.printf("{\"t\":%lu,\"f\":[", millis());
   for (int i = 0; i < NUM_CELLS; i++) {
@@ -475,7 +579,7 @@ void printFrame() {
                 presentCount());
 }
 
-void ack(const char* what) { Serial.printf("{\"ack\":\"%s\"}\n", what); }
+void ack(const char* what) { emitf("{\"ack\":\"%s\"}", what); }
 
 void runCommand(String c) {
   c.trim();
@@ -495,8 +599,8 @@ void runCommand(String c) {
       ledByWeb = true;
       digitalWrite(GAME_LED[n - 1], v ? LED_ON : LED_OFF);
       // kèm thời điểm LED đổi trạng thái (millis của board) -> web tính phản xạ = t(nút) - t(LED), không dính trễ USB
-      Serial.printf("{\"ack\":\"LED\",\"i\":%d,\"v\":%d,\"t\":%lu}\n", n, v ? 1 : 0, millis());
-    } else Serial.println("{\"err\":\"LED 1-4\"}");
+      emitf("{\"ack\":\"LED\",\"i\":%d,\"v\":%d,\"t\":%lu}", n, v ? 1 : 0, millis());
+    } else emitf("{\"err\":\"LED 1-4\"}");
   } else if (c.startsWith("BEEP")) {
     long ms = c.length() > 5 ? c.substring(5).toInt() : 150;
     if (ms < 10) ms = 10;
@@ -504,10 +608,18 @@ void runCommand(String c) {
     beepUntil = millis() + ms;
     digitalWrite(BUZZER_PIN, BUZZER_ON);
     ack("BEEP");
-  } else Serial.println("{\"err\":\"lenh khong ro\"}");
+  } else emitf("{\"err\":\"lenh khong ro\"}");
 }
 
 void readCommands() {
+  if (bleCmdPending) {
+    char c[sizeof(bleCmdBuf)];
+    portENTER_CRITICAL(&bleMux);
+    memcpy(c, bleCmdBuf, sizeof(c));
+    bleCmdPending = false;
+    portEXIT_CRITICAL(&bleMux);
+    runCommand(String(c));
+  }
   while (Serial.available()) {
     char ch = Serial.read();
     if (ch == '\n' || ch == '\r') {
@@ -519,7 +631,16 @@ void readCommands() {
 
 // ---------------- setup / loop ----------------
 void setup() {
+  // Bật sóng Bluetooth cần dòng lớn; nguồn yếu -> sụt áp -> board tự khởi động lại (đo 06/11/2026).
+  // Tự bảo vệ: nếu lần khởi động trước là do sụt áp / watchdog thì lần này KHÔNG bật Bluetooth,
+  // board vẫn chạy bình thường qua cáp USB. Nguồn đủ khoẻ (xem README) thì Bluetooth tự bật lại.
+  setCpuFrequencyMhz(80);  // giảm dòng tiêu thụ, vẫn đủ cho HX711, TFT, BLE
   Serial.begin(115200);
+  delay(200);
+  esp_reset_reason_t rr = esp_reset_reason();
+  bleSkipped = (rr == ESP_RST_BROWNOUT || rr == ESP_RST_TASK_WDT || rr == ESP_RST_INT_WDT || rr == ESP_RST_WDT);
+  // Bật Bluetooth trước khi TFT, HX711, LED chạy để dòng khởi động radio không cộng dồn
+  if (!bleSkipped) startBle();
 
   // Còi và LED tắt trước tiên
   digitalWrite(BUZZER_PIN, BUZZER_OFF);
@@ -567,9 +688,9 @@ void setup() {
   // Load cell: dò mô-đun, bỏ mẫu đầu, đặt 0
   hxDetectAndWarmup();
   hxTare();
-  Serial.print("{\"boot\":\"REHABBOARD_WEB\",\"hx\":[");
-  for (int i = 0; i < NUM_CELLS; i++) Serial.printf("%s%d", i ? "," : "", cellPresent[i] ? 1 : 0);
-  Serial.println("]}");
+  emitf("{\"boot\":\"REHABBOARD_WEB\",\"hx\":[%d,%d,%d,%d,%d,%d]}", cellPresent[0], cellPresent[1],
+        cellPresent[2], cellPresent[3], cellPresent[4], cellPresent[5]);
+  if (bleSkipped) emitf("{\"ev\":\"ble_off\",\"reason\":\"sut_ap\"}");
 
   // Encoder bằng ngắt
   encState = (digitalRead(ENC_CLK) << 1) | digitalRead(ENC_DT);
@@ -602,5 +723,6 @@ void loop() {
   if (millis() - lastPrintMs >= 50) {
     lastPrintMs = millis();
     printFrame();
+    bleFrame();
   }
 }

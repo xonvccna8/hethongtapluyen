@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RehabBoard AI</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="app">
@@ -37,6 +37,9 @@
         <label class="who">Người tập
           <select id="patientSel"></select>
         </label>
+        <button class="btn primary btn-connect btn-ble" title="Kết nối board qua Bluetooth">🔵 Bluetooth</button>
+        <button class="btn ghost btn-connect btn-usb" title="Kết nối board qua cáp USB (Chrome/Edge trên máy tính)">🔌 USB</button>
+        <button class="btn ghost btn-disconnect hidden">⏏ Ngắt kết nối</button>
         <button class="btn ghost" id="btnTare" title="Đặt 0 cho 6 load cell (không chạm vào phím)">⟲ Đặt 0 lực</button>
       </div>
     </header>
@@ -46,7 +49,7 @@
       <div class="card welcome hidden" id="welcome">
         <h3>👋 Bắt đầu sử dụng RehabBoard AI</h3>
         <ol class="steps">
-          <li id="stBoard">Kết nối board: nạp firmware <code>REHABBOARD_WEB</code>, cắm USB, đóng Arduino IDE.</li>
+          <li id="stBoard">Kết nối board: bật board, bấm <b>🔵 Bluetooth</b> (hoặc <b>🔌 USB</b> nếu cắm cáp) ở góc trên.</li>
           <li id="stPatient">Thêm hồ sơ người tập (họ tên, tay tập, tình trạng).</li>
           <li>Bấm <b>⟲ Đặt 0 lực</b> khi không chạm vào phím, rồi vào <b>Luyện tập</b> làm lần lượt 6 bài.</li>
           <li>Vào <b>Trợ lý AI</b> để ChatGPT phân tích và gợi ý kế hoạch tập.</li>
@@ -195,26 +198,32 @@
         <div class="card">
           <h3>Kết nối board</h3>
           <div class="form">
-            <label>Cổng USB<select id="setPort"></select></label>
-            <p class="muted small">Board cần chạy firmware <code>Firmwave/REHABBOARD_WEB</code>. Đóng Arduino IDE / Serial Monitor trước khi kết nối.</p>
+            <div class="form-btns">
+              <button class="btn primary btn-connect btn-ble">🔵 Kết nối Bluetooth</button>
+              <button class="btn ghost btn-connect btn-usb">🔌 Kết nối cáp USB</button>
+              <button class="btn ghost btn-disconnect hidden">⏏ Ngắt kết nối</button>
+            </div>
             <p class="small" id="setStatus"></p>
+            <p class="muted small">Bluetooth: Chrome/Edge trên Android, Windows, macOS (iPhone/iPad dùng app Bluefy). Cáp USB: Chrome/Edge trên máy tính, đóng Arduino IDE trước.
+              Board chạy firmware <code>Firmwave/REHABBOARD_WEB</code>, tên Bluetooth <b>REHABBOARD</b>. Màn TFT báo trạng thái Bluetooth.</p>
           </div>
         </div>
         <div class="card">
-          <h3>Trợ lý AI (OpenAI)</h3>
+          <h3>Trợ lý AI (ChatGPT)</h3>
           <div class="form">
-            <label>Model<input id="setModel" placeholder="gpt-5.5-mini"></label>
-            <label>API key<input id="setKey" type="password" placeholder="sk-…  (để trống = giữ khoá cũ)" autocomplete="off"></label>
-            <p class="muted small" id="keyInfo"></p>
-            <p class="muted small">Khoá chỉ lưu trên máy này (WebApp/config.json) và chỉ server dùng; trình duyệt không bao giờ nhận lại khoá.</p>
+            <label>Mã truy cập AI<input id="setCode" type="password" autocomplete="off" placeholder="mã do người quản lý đặt trên Vercel"></label>
+            <p class="muted small">OpenAI API key và model (mặc định <code>gpt-5.5-mini</code>) nằm trong biến môi trường của dự án Vercel, không lưu trên máy này. Mã truy cập để người lạ không dùng hết tiền API.</p>
           </div>
         </div>
         <div class="card">
-          <h3>Truy cập từ xa (Vercel)</h3>
-          <div class="form" id="remoteBox">
-            <p class="muted small">Trang trên Vercel nối về máy tính này qua Tailscale Funnel. Người mở từ xa phải nhập mật khẩu dưới đây.</p>
-            <label>Mật khẩu truy cập từ xa<input id="setAccess" autocomplete="off"></label>
-            <p class="muted small" id="remoteInfo"></p>
+          <h3>Dữ liệu &amp; sao lưu</h3>
+          <div class="form">
+            <p class="muted small">Hồ sơ và kết quả tập lưu ngay trên trình duyệt của máy này. Nên sao lưu thường xuyên; muốn dùng máy khác thì khôi phục file sao lưu trên máy đó.</p>
+            <p class="small" id="dbInfo"></p>
+            <div class="form-btns">
+              <button type="button" class="btn ghost" id="btnBackup">⬇ Sao lưu (.json)</button>
+              <label class="btn ghost" style="cursor:pointer">⬆ Khôi phục<input type="file" id="fileRestore" accept="application/json,.json" hidden></label>
+            </div>
           </div>
         </div>
         <div class="card">
@@ -236,19 +245,7 @@
     </section>
   </main>
 </div>
-<div id="login" class="login hidden">
-  <form class="card login-card" id="loginForm">
-    <div class="brand-logo" style="margin:0 auto 10px">✋</div>
-    <h3 style="justify-content:center">REHABBOARD AI — Đăng nhập</h3>
-    <p class="muted small" style="text-align:center">Web đang mở từ xa, nối về máy tính cắm board. Nhập mật khẩu truy cập
-      (xem trong <b>Cài đặt</b> khi mở web ngay trên máy tính đó).</p>
-    <input id="loginPw" type="password" placeholder="Mật khẩu truy cập" autocomplete="current-password" required>
-    <button class="btn primary wide">Đăng nhập</button>
-    <p class="flag small" id="loginErr" style="text-align:center"></p>
-  </form>
-</div>
 <div id="toast" class="toast"></div>
-<script src="/static/config.js"></script>
-<script src="/static/app.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
