@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RehabBoard AI</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-logo">✋</div>
+      <div><div class="brand-name">REHABBOARD <span>AI</span></div><div class="brand-sub">Phục hồi bàn tay</div></div>
+    </div>
+    <nav>
+      <a data-view="overview" class="active"><i>🏠</i>Tổng quan</a>
+      <a data-view="train"><i>🏋️</i>Luyện tập</a>
+      <a data-view="progress"><i>📈</i>Tiến triển</a>
+      <a data-view="ai"><i>🤖</i>Trợ lý AI</a>
+      <a data-view="patients"><i>👤</i>Người tập</a>
+      <a data-view="settings"><i>⚙️</i>Cài đặt</a>
+    </nav>
+    <div class="side-foot">
+      <div id="conn" class="conn off"><span class="dot"></span><span id="connText">Đang kết nối…</span></div>
+      <div class="quote">“Phục hồi hôm nay — kiến tạo ngày mai”</div>
+    </div>
+  </aside>
+
+  <main>
+    <header class="top">
+      <div>
+        <h1 class="title">REHABBOARD <b>AI</b></h1>
+        <div class="pill">HỆ THỐNG AI PHỤC HỒI BÀN TAY THEO MÔ-ĐUN</div>
+      </div>
+      <div class="top-right">
+        <label class="who">Người tập
+          <select id="patientSel"></select>
+        </label>
+        <button class="btn ghost" id="btnTare" title="Đặt 0 cho 6 load cell (không chạm vào phím)">⟲ Đặt 0 lực</button>
+      </div>
+    </header>
+
+    <!-- TỔNG QUAN -->
+    <section id="view-overview" class="view active">
+      <div class="card welcome hidden" id="welcome">
+        <h3>👋 Bắt đầu sử dụng RehabBoard AI</h3>
+        <ol class="steps">
+          <li id="stBoard">Kết nối board: nạp firmware <code>REHABBOARD_WEB</code>, cắm USB, đóng Arduino IDE.</li>
+          <li id="stPatient">Thêm hồ sơ người tập (họ tên, tay tập, tình trạng).</li>
+          <li>Bấm <b>⟲ Đặt 0 lực</b> khi không chạm vào phím, rồi vào <b>Luyện tập</b> làm lần lượt 6 bài.</li>
+          <li>Vào <b>Trợ lý AI</b> để ChatGPT phân tích và gợi ý kế hoạch tập.</li>
+        </ol>
+        <button class="btn primary" data-goto="patients" id="welcomeBtn">+ Thêm người tập</button>
+      </div>
+      <div class="grid g-overview">
+        <div class="card hand-card">
+          <h3>Hồ sơ bàn tay <small id="handDate"></small></h3>
+          <div class="hand-wrap">
+            <svg id="handSvg" viewBox="0 0 220 240"></svg>
+            <div id="fingerBars" class="finger-bars"></div>
+          </div>
+          <p class="muted small" id="handNote">Làm bài “Nhấn từng ngón” để có hồ sơ bàn tay.</p>
+        </div>
+        <div class="card score-card">
+          <h3>Hand Recovery Score</h3>
+          <div class="score-row">
+            <div class="score-big" id="scoreBig">--</div>
+            <div class="score-delta" id="scoreDelta"></div>
+          </div>
+          <div id="scoreTrend" class="chart small-chart"></div>
+          <p class="muted small">Điểm 0–100, trung bình điểm mới nhất của từng bài tập theo ngày.</p>
+        </div>
+        <div class="card today-card">
+          <h3>Bài tập hôm nay</h3>
+          <div class="today-top"><span id="todayCount">0/5 hoàn thành</span><span class="trophy">🏆</span></div>
+          <div class="progress"><div id="todayBar"></div></div>
+          <ul id="todayList" class="today-list"></ul>
+          <button class="btn primary wide" data-goto="train">Bắt đầu luyện tập</button>
+        </div>
+        <div class="card live-card">
+          <h3>Theo dõi trực tiếp <small id="liveHz"></small></h3>
+          <div id="liveForces" class="live-forces"></div>
+          <div class="live-row">
+            <div class="mini"><div class="mini-h">④ Xoay núm</div><div class="mini-v" id="liveEnc">0</div><div class="mini-s" id="liveSw">nút: thả</div></div>
+            <div class="mini"><div class="mini-h">⑤ Thanh trượt</div><div class="mini-v" id="livePot">0%</div><div class="hbar"><div id="livePotBar"></div></div></div>
+            <div class="mini"><div class="mini-h">⑥ Game · ③ 9 lỗ</div><div class="leds" id="liveGame"></div><div class="mini-s" id="liveB9">③ 9 lỗ: thả</div></div>
+          </div>
+          <div class="live-actions">
+            <button class="btn ghost" data-cmd="BEEP 150">🔔 Thử còi</button>
+            <button class="btn ghost" id="btnLedTest">💡 Thử LED</button>
+            <button class="btn ghost" data-cmd="ENC0">↺ Núm về 0</button>
+          </div>
+        </div>
+        <div class="card ai-mini">
+          <h3>🤖 Lời khuyên AI gần nhất</h3>
+          <div id="aiLast" class="md muted">Chưa có phân tích. Vào <a data-goto="ai">Trợ lý AI</a> để phân tích.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- LUYỆN TẬP -->
+    <section id="view-train" class="view">
+      <div class="grid g-ex" id="exGrid"></div>
+      <div class="card runner hidden" id="runner">
+        <div class="runner-head">
+          <div><div class="runner-tag" id="rTag"></div><h2 id="rTitle"></h2></div>
+          <button class="btn ghost" id="rClose">✕ Đóng</button>
+        </div>
+        <p id="rDesc" class="muted"></p>
+        <div class="runner-body">
+          <div class="stage" id="rStage"></div>
+          <div class="runner-side">
+            <div class="phase" id="rPhase">Sẵn sàng</div>
+            <div class="count" id="rCount"></div>
+            <div class="progress"><div id="rProg"></div></div>
+            <div class="runner-btns">
+              <button class="btn primary" id="rStart">▶ Bắt đầu</button>
+              <button class="btn ghost" id="rStop" disabled>■ Dừng</button>
+            </div>
+          </div>
+        </div>
+        <div id="rResult" class="result hidden"></div>
+      </div>
+    </section>
+
+    <!-- TIẾN TRIỂN -->
+    <section id="view-progress" class="view">
+      <div class="grid g-2">
+        <div class="card"><h3>Hand Recovery Score theo ngày</h3><div id="chOverall" class="chart"></div></div>
+        <div class="card"><h3>Điểm từng bài tập</h3><div id="chEx" class="chart"></div></div>
+        <div class="card"><h3>Lực từng ngón (đỉnh mỗi buổi) <small id="unitNote"></small></h3><div id="chFingers" class="chart"></div></div>
+        <div class="card"><h3>Phản xạ (ms) & bóp tay</h3><div id="chReact" class="chart"></div></div>
+      </div>
+      <div class="card"><h3>Lịch sử buổi tập</h3><div id="sessTable" class="table-wrap"></div></div>
+    </section>
+
+    <!-- TRỢ LÝ AI -->
+    <section id="view-ai" class="view">
+      <div class="grid g-ai">
+        <div class="card">
+          <div class="ai-head">
+            <h3>Phân tích &amp; lời khuyên tập luyện</h3>
+            <button class="btn primary" id="btnAnalyze">✨ Phân tích bằng AI</button>
+          </div>
+          <div class="muted small" id="aiModel"></div>
+          <div id="aiReport" class="md report">Bấm <b>Phân tích bằng AI</b> để ChatGPT đọc số liệu các buổi tập và đề xuất kế hoạch tuần tới.</div>
+          <p class="disclaimer">⚠ Lời khuyên của AI chỉ để tham khảo, không thay thế chỉ định của bác sĩ / kỹ thuật viên phục hồi chức năng. Dừng tập nếu đau, tê hoặc sưng tăng.</p>
+        </div>
+        <div class="card chat-card">
+          <h3>Hỏi đáp với trợ lý</h3>
+          <div id="chatLog" class="chat-log"></div>
+          <div class="chips">
+            <button class="chip">Ngón nào của tôi yếu nhất?</button>
+            <button class="chip">Hôm nay nên tập bài nào?</button>
+            <button class="chip">Tôi tiến bộ ra sao so với tuần trước?</button>
+          </div>
+          <form id="chatForm" class="chat-form">
+            <input id="chatInput" placeholder="Nhập câu hỏi…" autocomplete="off">
+            <button class="btn primary">Gửi</button>
+          </form>
+        </div>
+      </div>
+      <div class="card"><h3>Các lần phân tích trước</h3><div id="aiHistory"></div></div>
+    </section>
+
+    <!-- NGƯỜI TẬP -->
+    <section id="view-patients" class="view">
+      <div class="grid g-2">
+        <div class="card"><h3>Danh sách người tập</h3><div id="patientList"></div></div>
+        <div class="card">
+          <h3 id="pfTitle">Thêm người tập</h3>
+          <form id="patientForm" class="form">
+            <input type="hidden" name="id">
+            <label>Họ tên<input name="name" required></label>
+            <div class="form-row">
+              <label>Năm sinh<input name="birth_year" type="number" min="1900" max="2030"></label>
+              <label>Giới tính<select name="gender"><option value="">—</option><option>Nam</option><option>Nữ</option></select></label>
+              <label>Tay tập<select name="hand"><option value="phai">Tay phải</option><option value="trai">Tay trái</option></select></label>
+            </div>
+            <label>Chẩn đoán / tình trạng<input name="diagnosis" placeholder="VD: sau tai biến, yếu tay phải 3 tháng"></label>
+            <label>Ghi chú<textarea name="notes" rows="3" placeholder="VD: đau khi gập ngón áp út"></textarea></label>
+            <div class="form-btns">
+              <button class="btn primary">Lưu</button>
+              <button type="button" class="btn ghost" id="pfReset">Thêm mới</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- CÀI ĐẶT -->
+    <section id="view-settings" class="view">
+      <div class="grid g-2">
+        <div class="card">
+          <h3>Kết nối board</h3>
+          <div class="form">
+            <label>Cổng USB<select id="setPort"></select></label>
+            <p class="muted small">Board cần chạy firmware <code>Firmwave/REHABBOARD_WEB</code>. Đóng Arduino IDE / Serial Monitor trước khi kết nối.</p>
+            <p class="small" id="setStatus"></p>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Trợ lý AI (OpenAI)</h3>
+          <div class="form">
+            <label>Model<input id="setModel" placeholder="gpt-5.5-mini"></label>
+            <label>API key<input id="setKey" type="password" placeholder="sk-…  (để trống = giữ khoá cũ)" autocomplete="off"></label>
+            <p class="muted small" id="keyInfo"></p>
+            <p class="muted small">Khoá chỉ lưu trên máy này (WebApp/config.json) và chỉ server dùng; trình duyệt không bao giờ nhận lại khoá.</p>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Mục tiêu chấm điểm</h3>
+          <div class="form">
+            <label>Lực mục tiêu mỗi ngón (số đếm HX711)<input id="setTF" type="number"></label>
+            <label>Lực mục tiêu bóp tay (số đếm HX711)<input id="setTG" type="number"></label>
+            <p class="muted small">Đạt mục tiêu = điểm lực tối đa. Đo trên board: nhấn ngón ~5–7 nghìn, bóp tay ~70 nghìn.</p>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Hiệu chuẩn lực (tuỳ chọn)</h3>
+          <p class="muted small">Đặt 0 lực, rồi đặt một vật biết khối lượng lên phím và bấm <b>Hiệu chuẩn</b> ở kênh đó. Sau khi hiệu chuẩn, lực hiển thị bằng kg.</p>
+          <div class="form-row"><label>Khối lượng vật (kg)<input id="calMass" type="number" step="0.1" value="1"></label></div>
+          <div id="calTable"></div>
+        </div>
+      </div>
+      <div class="form-btns"><button class="btn primary" id="btnSaveSettings">💾 Lưu cài đặt</button></div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

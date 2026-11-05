@@ -1,0 +1,10 @@
+# Bí mật: OpenAI API key được lưu ở đây (server tự tạo file khi chạy lần đầu)
+WebApp/config.json
+
+# Dữ liệu người bệnh (SQLite) — không đưa lên mạng
+WebApp/data/
+
+# File sinh tự động / công cụ máy cá nhân
+__pycache__/
+*.pyc
+.claude/
