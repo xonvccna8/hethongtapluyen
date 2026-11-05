@@ -604,6 +604,8 @@ $("#rStart").addEventListener("click", () => { if (readyToTrain()) runExercise()
 async function runAll() {
   if (!readyToTrain()) return;
   if (RUN && !RUN.done) return toast("Đang có bài tập chạy");
+  const who = S.patients.find((p) => p.id === S.pid)?.name || "";
+  if (!confirm(`Bắt đầu buổi tập đủ ${ACTIVE_EX.length} bài cho “${who}”?\nKhoảng 7–8 phút. Web dẫn lần lượt từng bài, bài nào xong thì lưu ngay; bấm ■ Dừng bất cứ lúc nào.`)) return;
   show("train");
   for (let k = 0; k < ACTIVE_EX.length; k++) {
     const key = ACTIVE_EX[k];
@@ -621,7 +623,7 @@ async function runAll() {
   }
   toast("🎉 Xong cả 6 bài! Vào Trợ lý AI để nhận lời khuyên.", 5000);
 }
-$$(".btn-runall").forEach((b) => b.addEventListener("click", runAll));
+$$(".btn-runall").forEach((b) => b.addEventListener("click", (e) => { e.currentTarget.blur(); runAll(); }));
 
 function setPhase(t) { $("#rPhase").textContent = t; }
 function setProg(f) { $("#rProg").style.width = `${clamp(f, 0, 1) * 100}%`; }
@@ -705,8 +707,16 @@ const RUNNERS = {
           await phase(`Chuẩn bị: ${names[i]}`, 2);
           if (demo()) cmd(`SIM PRESS ${i} 3000`);
           cmd("BEEP 60");
+          // chờ người tập BẮT ĐẦU nhấn (tối đa 10 s) rồi mới đếm 3 s giữ lực
+          const onset = Math.max(800, (S.settings?.target_finger_counts || 8000) * 0.1);
+          let pressed = false;
+          await phase(`NHẤN ${names[i].toUpperCase()} — chờ bạn nhấn`, 10, () => (pressed = forceOf(S.frame, i) >= onset));
           const samples = [];
-          await phase(`NHẤN & GIỮ`, 3, (el) => { if (S.frame) samples.push({ el, v: [0, 1, 2, 3, 4].map((k) => forceOf(S.frame, k)) }); });
+          if (pressed) {
+            await phase(`GIỮ LỰC ${names[i].toUpperCase()}`, 3, (el) => { if (S.frame) samples.push({ el, v: [0, 1, 2, 3, 4].map((k) => forceOf(S.frame, k)) }); });
+          } else {
+            toast(`Không thấy lực ở ${names[i]} sau 10 giây — ghi nhận lần này không có lực`, 3500);
+          }
           rec[i].push(samples);
           RUN.target = -1;
           setProg(++n / total);
@@ -760,8 +770,13 @@ const RUNNERS = {
         await phase(`Chuẩn bị — lần ${r + 1}/${reps}`, 2);
         if (demo()) cmd("SIM PRESS 5 4000");
         cmd("BEEP 60");
+        // chờ người tập bắt đầu bóp (tối đa 10 s) rồi mới đếm 4 s giữ lực
+        const onset = Math.max(2000, (S.settings?.target_grip_counts || 60000) * 0.08);
+        let gripped = false;
+        await phase("BÓP TAY — chờ bạn bóp", 10, () => (gripped = forceOf(S.frame, 5) >= onset));
         const s = [];
-        await phase("BÓP MẠNH & GIỮ", 4, (el) => { if (S.frame) s.push({ el, v: forceOf(S.frame, 5) }); });
+        if (gripped) await phase("BÓP MẠNH & GIỮ", 4, (el) => { if (S.frame) s.push({ el, v: forceOf(S.frame, 5) }); });
+        else toast("Không thấy lực bóp sau 10 giây — ghi nhận lần này không có lực", 3500);
         const peak = Math.max(0, ...s.map((x) => x.v));
         // giữ lực = lực trung bình giây cuối / lực đỉnh (giây đầu còn đang tăng lực nên không dùng làm mốc)
         const last = avg(s.filter((x) => x.el >= 3).map((x) => x.v));
