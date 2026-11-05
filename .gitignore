@@ -8,3 +8,9 @@ WebApp/data/
 __pycache__/
 *.pyc
 .claude/
+
+# Liên kết Vercel CLI trên máy này
+.vercel/
+
+.vercel
+.env*

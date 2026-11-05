@@ -1,0 +1,8 @@
+# Vercel chỉ cần giao diện (web/), hàm AI (api/) và vercel.json. Mọi thứ khác (firmware, sơ đồ,
+# WebApp/ cũ có config.json chứa mật khẩu) không được gửi lên.
+*
+!web
+!web/**
+!api
+!api/**
+!vercel.json
