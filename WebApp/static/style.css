@@ -257,3 +257,6 @@ select:focus, input:focus, textarea:focus { outline: 2px solid #9cc4f5; border-c
 .hole { width: 70px; height: 70px; border-radius: 50%; background: radial-gradient(circle at 50% 40%, #3b2a1a, #120b05); color: #8d7357; display: grid; place-items: center; font-weight: 900; font-size: 18px; transition: all .12s; }
 .hole.on { background: radial-gradient(circle at 40% 35%, #ffd27a, #fb8c00); color: #fff; box-shadow: 0 0 14px rgba(251, 140, 0, .7); }
 .holes-side { min-width: 180px; }
+
+.login { position: fixed; inset: 0; background: rgba(16, 34, 58, .55); backdrop-filter: blur(4px); display: grid; place-items: center; z-index: 40; padding: 16px; }
+.login-card { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 10px; }

@@ -210,6 +210,14 @@
           </div>
         </div>
         <div class="card">
+          <h3>Truy cập từ xa (Vercel)</h3>
+          <div class="form" id="remoteBox">
+            <p class="muted small">Trang trên Vercel nối về máy tính này qua Tailscale Funnel. Người mở từ xa phải nhập mật khẩu dưới đây.</p>
+            <label>Mật khẩu truy cập từ xa<input id="setAccess" autocomplete="off"></label>
+            <p class="muted small" id="remoteInfo"></p>
+          </div>
+        </div>
+        <div class="card">
           <h3>Mục tiêu chấm điểm</h3>
           <div class="form">
             <label>Lực mục tiêu mỗi ngón (số đếm HX711)<input id="setTF" type="number"></label>
@@ -228,7 +236,19 @@
     </section>
   </main>
 </div>
+<div id="login" class="login hidden">
+  <form class="card login-card" id="loginForm">
+    <div class="brand-logo" style="margin:0 auto 10px">✋</div>
+    <h3 style="justify-content:center">REHABBOARD AI — Đăng nhập</h3>
+    <p class="muted small" style="text-align:center">Web đang mở từ xa, nối về máy tính cắm board. Nhập mật khẩu truy cập
+      (xem trong <b>Cài đặt</b> khi mở web ngay trên máy tính đó).</p>
+    <input id="loginPw" type="password" placeholder="Mật khẩu truy cập" autocomplete="current-password" required>
+    <button class="btn primary wide">Đăng nhập</button>
+    <p class="flag small" id="loginErr" style="text-align:center"></p>
+  </form>
+</div>
 <div id="toast" class="toast"></div>
+<script src="/static/config.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

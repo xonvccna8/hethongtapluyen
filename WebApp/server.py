@@ -9,6 +9,9 @@ Cấu hình: WebApp/config.json (tự tạo). Khoá OpenAI: biến môi trườn
 Dữ liệu người tập: WebApp/data/rehab.db (SQLite).
 """
 import argparse
+import hashlib
+import hmac
+import secrets
 import asyncio
 import json
 import math
@@ -21,7 +24,8 @@ from pathlib import Path
 
 import serial
 from serial.tools import list_ports
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -54,6 +58,9 @@ DEFAULT_CONFIG = {
     # Mục tiêu để chấm điểm (số đếm HX711, đo trên board 05/11/2026: ngón ~5-7k, bóp tay ~70k)
     "target_finger_counts": 8000,
     "target_grip_counts": 60000,
+    # Truy cập từ xa (trang Vercel đi qua Tailscale Funnel): cần mật khẩu. Tự sinh lần đầu, xem/đổi ở Cài đặt (trên laptop).
+    "access_password": "",
+    "session_secret": "",
 }
 
 
@@ -76,6 +83,12 @@ CFG.pop("demo", None)  # chế độ mô phỏng chỉ bật bằng tham số --
 if not CONFIG_PATH.exists():
     save_config(CFG)
 DEMO = False  # main() đặt True khi chạy với --demo
+
+if not CFG.get("access_password"):
+    CFG["access_password"] = "".join(secrets.choice("abcdefghjkmnpqrstuvwxyz23456789") for _ in range(10))
+if not CFG.get("session_secret"):
+    CFG["session_secret"] = secrets.token_hex(32)
+save_config(CFG)
 
 
 # ------------------------------------------------------------------ cơ sở dữ liệu
@@ -421,6 +434,55 @@ def patient_context(pid, limit=40):
 app = FastAPI(title="RehabBoard AI")
 
 
+# ------------------------------------------------------------------ truy cập từ xa
+def is_remote(request: Request):
+    """Đi qua đường hầm Tailscale (có X-Forwarded-For / Tailscale-Funnel-Request) hoặc từ trang khác (Vercel)."""
+    h = request.headers
+    origin = h.get("origin")
+    return ("x-forwarded-for" in h or "tailscale-funnel-request" in h
+            or (bool(origin) and origin != f"{request.url.scheme}://{h.get('host')}"))
+
+
+def make_token():
+    return hmac.new(CFG["session_secret"].encode(), CFG["access_password"].encode(), hashlib.sha256).hexdigest()
+
+
+_fails = {}
+
+
+def client_ip(request: Request):
+    return (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "?")).split(",")[0].strip()
+
+
+@app.middleware("http")
+async def remote_guard(request: Request, call_next):
+    path = request.url.path
+    if request.method == "OPTIONS" or not path.startswith("/api/") or path == "/api/login" or not is_remote(request):
+        return await call_next(request)
+    tok = request.headers.get("x-rb-token") or request.query_params.get("token") or ""
+    if not hmac.compare_digest(tok, make_token()):
+        return JSONResponse({"detail": "Cần đăng nhập (mật khẩu truy cập từ xa)", "login": True}, status_code=401)
+    return await call_next(request)
+
+
+@app.post("/api/login")
+def login(body: dict, request: Request):
+    ip = client_ip(request)
+    n, until = _fails.get(ip, (0, 0))
+    if n >= 5 and until > time.time():
+        raise HTTPException(429, "Sai mật khẩu quá nhiều lần, thử lại sau 10 phút")
+    if not hmac.compare_digest(str(body.get("password", "")), CFG["access_password"]):
+        _fails[ip] = (n + 1 if until > time.time() else 1, time.time() + 600)
+        raise HTTPException(401, "Sai mật khẩu")
+    _fails.pop(ip, None)
+    return {"token": make_token()}
+
+
+# CORS: chỉ cho trang trên Vercel và máy này gọi API (thêm sau cùng -> chạy ngoài cùng, trả cả lỗi 401 kèm CORS)
+app.add_middleware(CORSMiddleware, allow_origin_regex=r"^https://[a-z0-9-]+\.vercel\.app$|^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+                   allow_methods=["*"], allow_headers=["content-type", "x-rb-token"], max_age=600)
+
+
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
@@ -596,10 +658,13 @@ def ai_history(pid: int):
 
 # ---- cài đặt
 @app.get("/api/settings")
-def get_settings():
+def get_settings(request: Request):
     key = CFG.get("openai_api_key") or ""
     import os
     return {
+        "remote": is_remote(request),
+        # mật khẩu truy cập từ xa chỉ hiện khi mở web ngay trên laptop
+        "access_password": None if is_remote(request) else CFG.get("access_password"),
         "serial_port": CFG.get("serial_port"), "openai_model": CFG.get("openai_model"),
         "openai_key_set": bool(key), "openai_key_hint": (key[:3] + "…" + key[-4:]) if len(key) > 8 else "",
         "openai_key_env": bool(os.environ.get("OPENAI_API_KEY")),
@@ -610,7 +675,7 @@ def get_settings():
 
 
 @app.post("/api/settings")
-def set_settings(body: dict):
+def set_settings(body: dict, request: Request):
     for k in ("serial_port", "openai_model", "target_finger_counts", "target_grip_counts", "counts_per_kg"):
         if k in body:
             CFG[k] = body[k]
@@ -618,6 +683,11 @@ def set_settings(body: dict):
         CFG["openai_api_key"] = str(body["openai_api_key"]).strip()
     if body.get("clear_openai_key"):
         CFG["openai_api_key"] = ""
+    pw = str(body.get("access_password") or "").strip()
+    if pw and not is_remote(request):  # chỉ đổi được mật khẩu khi ngồi ở laptop
+        if len(pw) < 6:
+            raise HTTPException(400, "Mật khẩu truy cập từ xa cần ít nhất 6 ký tự")
+        CFG["access_password"] = pw
     save_config(CFG)
     return {"ok": True}
 

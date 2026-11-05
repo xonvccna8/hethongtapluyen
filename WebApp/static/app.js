@@ -35,12 +35,25 @@ function toast(msg, ms = 2600) {
   toast._t = setTimeout(() => t.classList.remove("show"), ms);
 }
 
+const API = window.API_BASE || "";
+const token = () => { try { return localStorage.getItem("rb_token") || ""; } catch { return ""; } };
+
+function showLogin(msg) {
+  $("#login").classList.remove("hidden");
+  $("#loginErr").textContent = msg || "";
+  setTimeout(() => $("#loginPw").focus(), 50);
+}
+
 async function api(path, opts = {}) {
   const o = { method: opts.method || "GET", headers: {} };
+  if (token()) o.headers["X-RB-Token"] = token();
   if (opts.body !== undefined) { o.method = opts.method || "POST"; o.headers["Content-Type"] = "application/json"; o.body = JSON.stringify(opts.body); }
-  const r = await fetch(path, o);
+  let r;
+  try { r = await fetch(API + path, o); }
+  catch { throw new Error(API ? "Không kết nối được máy tính cắm board (máy tắt, mất mạng hoặc chưa chạy server.py)" : "Mất kết nối tới server"); }
   let data = null;
   try { data = await r.json(); } catch { /* bỏ qua */ }
+  if (r.status === 401 && data && data.login) { showLogin(); throw new Error("Cần đăng nhập"); }
   if (!r.ok) throw new Error((data && data.detail) || `Lỗi ${r.status}`);
   return data;
 }
@@ -139,7 +152,9 @@ function lineChart(el, series, opt = {}) {
 
 // ------------------------------------------------------------------ luồng dữ liệu trực tiếp (SSE)
 function connectStream() {
-  const es = new EventSource("/api/stream");
+  if (S.es) S.es.close();
+  const es = new EventSource(API + "/api/stream" + (token() ? `?token=${encodeURIComponent(token())}` : ""));
+  S.es = es;
   es.addEventListener("frame", (e) => { S.frame = JSON.parse(e.data); S.frames++; scheduleLive(); });
   es.addEventListener("ev", (e) => {
     const ev = JSON.parse(e.data);
@@ -147,7 +162,7 @@ function connectStream() {
     if (ev.ev === "tare" && ev.state === "done") toast("✔ Đã đặt 0 cho 6 load cell");
   });
   es.addEventListener("status", (e) => { S.status = JSON.parse(e.data); renderConn(); });
-  es.onerror = () => { S.status = { connected: false, message: "Mất kết nối tới server" }; renderConn(); };
+  es.onerror = () => { S.status = { connected: false, message: API ? "Không nối được về máy tính cắm board" : "Mất kết nối tới server" }; renderConn(); };
 }
 setInterval(() => { $("#liveHz").textContent = S.frames ? `${S.frames} khung/giây` : ""; S.frames = 0; }, 1000);
 
@@ -155,7 +170,7 @@ function renderConn() {
   const st = S.status, c = $("#conn");
   if ($("#stBoard")) $("#stBoard").classList.toggle("done", !!st.connected);
   c.className = "conn " + (st.connected ? (st.demo ? "demo" : "on") : "off");
-  $("#connText").textContent = st.connected ? (st.demo ? "Mô phỏng (bệnh nhân ảo)" : `Board ${st.port} · HX711 ${st.hx ?? "?"}/6`) : "Chưa kết nối board";
+  $("#connText").textContent = st.message === "Không nối được về máy tính cắm board" ? "Máy tính cắm board offline" : st.connected ? (st.demo ? "Mô phỏng (bệnh nhân ảo)" : `Board ${st.port} · HX711 ${st.hx ?? "?"}/6`) : "Chưa kết nối board";
   c.title = st.message || "";
   const ss = $("#setStatus"); if (ss) ss.textContent = st.message || "";
 }
@@ -834,6 +849,8 @@ async function loadSettings() {
   $("#setKey").value = "";
   $("#keyInfo").innerHTML = st.openai_key_env ? "Đang dùng khoá từ biến môi trường OPENAI_API_KEY." : st.openai_key_set ? `Đã lưu khoá: <code>${esc(st.openai_key_hint)}</code> · <a id="clearKey">xoá khoá</a>` : "Chưa có khoá.";
   $("#setTF").value = st.target_finger_counts; $("#setTG").value = st.target_grip_counts;
+  if (st.remote) { $("#setAccess").value = ""; $("#setAccess").disabled = true; $("#remoteInfo").textContent = "Bạn đang mở từ xa — chỉ đổi được mật khẩu khi ngồi ở máy tính cắm board."; }
+  else { $("#setAccess").disabled = false; $("#setAccess").value = st.access_password || ""; $("#remoteInfo").innerHTML = "Trang Vercel: mở bằng điện thoại / máy khác, nhập mật khẩu này. Đổi mật khẩu thì mọi máy đã đăng nhập phải đăng nhập lại."; }
   S.cal = [...(st.counts_per_kg || [null, null, null, null, null, null])];
   $("#calTable").innerHTML = `<table class="small"><tr><th>Kênh</th><th>Đang đọc</th><th>Số đếm / kg</th><th></th></tr>${[0, 1, 2, 3, 4, 5].map((i) => `<tr><td>${i === 5 ? "Bóp tay" : `Phím ${i + 1} · ${fingerNames()[i]}`}</td><td id="calLive${i}">–</td><td id="calVal${i}">${S.cal[i] ? Math.round(S.cal[i]) : "chưa"}</td><td><button class="btn ghost" data-cal="${i}">Hiệu chuẩn</button> <button class="btn ghost" data-uncal="${i}">Xoá</button></td></tr>`).join("")}</table>`;
   renderConn();
@@ -857,6 +874,7 @@ $("#btnSaveSettings").addEventListener("click", async () => {
     target_finger_counts: Number($("#setTF").value) || 8000, target_grip_counts: Number($("#setTG").value) || 60000, counts_per_kg: S.cal,
   };
   const key = $("#setKey").value.trim(); if (key) body.openai_api_key = key;
+  if (!$("#setAccess").disabled && $("#setAccess").value.trim()) body.access_password = $("#setAccess").value.trim();
   try { await api("/api/settings", { body }); toast("✔ Đã lưu cài đặt"); await loadSettings(); await refreshStatus(); } catch (err) { toast(err.message); }
 });
 
@@ -870,7 +888,19 @@ $("#btnLedTest").addEventListener("click", async () => {
 });
 
 // ------------------------------------------------------------------ khởi động
-(async function init() {
+$("#loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const r = await api("/api/login", { body: { password: $("#loginPw").value } });
+    localStorage.setItem("rb_token", r.token);
+    $("#login").classList.add("hidden");
+    $("#loginPw").value = "";
+    init();
+  } catch (err) { $("#loginErr").textContent = err.message; }
+});
+
+async function init() {
+  try { await api("/api/status"); } catch (err) { if (err.message !== "Cần đăng nhập") toast(err.message, 5000); if (err.message === "Cần đăng nhập") return; }
   connectStream();
   try {
     S.settings = await api("/api/settings");
@@ -879,5 +909,6 @@ $("#btnLedTest").addEventListener("click", async () => {
     await refreshPatientData();
   } catch (err) { toast(err.message); }
   renderExGrid();
-  S.view = "overview";
-})();
+  S.view = S.view || "overview";
+}
+init();
