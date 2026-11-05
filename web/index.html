@@ -79,7 +79,8 @@
           <div class="today-top"><span id="todayCount">0/5 hoàn thành</span><span class="trophy">🏆</span></div>
           <div class="progress"><div id="todayBar"></div></div>
           <ul id="todayList" class="today-list"></ul>
-          <button class="btn primary wide" data-goto="train">Bắt đầu luyện tập</button>
+          <button class="btn primary wide btn-runall">▶ Tập đủ 6 bài</button>
+          <button class="btn ghost wide" data-goto="train">Chọn từng bài</button>
         </div>
         <div class="card live-card">
           <h3>Theo dõi trực tiếp <small id="liveHz"></small></h3>
@@ -104,6 +105,11 @@
 
     <!-- LUYỆN TẬP -->
     <section id="view-train" class="view">
+      <div class="card train-help">
+        <div><b>Cách tập để được lưu kết quả:</b> bấm vào một bài bên dưới → bấm <b>▶ Bắt đầu</b> → làm theo hướng dẫn tới khi hiện <b>“Hoàn thành 🎉”</b>.
+          Nhấn/bóp trên board mà chưa bấm Bắt đầu thì web chỉ hiển thị, <b>không lưu</b>. Bấm Dừng giữa chừng cũng không lưu.</div>
+        <button class="btn primary btn-runall">▶ Tập đủ 6 bài</button>
+      </div>
       <div class="grid g-ex" id="exGrid"></div>
       <div class="card runner hidden" id="runner">
         <div class="runner-head">

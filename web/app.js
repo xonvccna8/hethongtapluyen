@@ -570,9 +570,14 @@ function openRunner(ex) {
 }
 $("#rClose").addEventListener("click", () => { if (RUN) RUN.abort = true; $("#runner").classList.add("hidden"); });
 $("#rStop").addEventListener("click", () => { if (RUN) RUN.abort = true; });
-$("#rStart").addEventListener("click", async () => {
-  if (!S.status.connected) return toast("Chưa kết nối board (hoặc bật chế độ mô phỏng trong Cài đặt)");
-  if (!S.pid) { toast("Hãy thêm/chọn người tập trước"); return show("patients"); }
+function readyToTrain() {
+  if (!S.status.connected) { toast("Chưa kết nối board — bấm 🔵 Bluetooth hoặc 🔌 USB ở góc trên", 4000); return false; }
+  if (!S.pid) { toast("Hãy thêm/chọn người tập trước"); show("patients"); return false; }
+  return true;
+}
+
+/** chạy bài đang mở trong khung runner. -> true nếu làm hết bài và đã lưu */
+async function runExercise() {
   const ex = RUN.ex, def = RUNNERS[ex.key];
   RUN = { ex, abort: false, done: false, draw: def.draw || null, t0: Date.now() / 1000 };
   $("#rStart").disabled = true; $("#rStop").disabled = false; $("#rResult").classList.add("hidden");
@@ -580,16 +585,43 @@ $("#rStart").addEventListener("click", async () => {
   try {
     const res = await def.run();
     RUN.done = true;
-    await finish(ex, res);
+    return await finish(ex, res);
   } catch (err) {
     RUN.done = true;
     if (err.message !== "abort") toast(err.message);
-    $("#rPhase").textContent = "Đã dừng"; $("#rCount").textContent = "";
+    $("#rPhase").textContent = "Đã dừng — CHƯA lưu"; $("#rCount").textContent = "";
+    $("#rResult").classList.remove("hidden");
+    $("#rResult").innerHTML = `<p class="flag">Bài bị dừng giữa chừng nên kết quả không được lưu. Bấm ▶ Bắt đầu để làm lại từ đầu.</p>`;
+    return false;
   } finally {
     if (def.cleanup) def.cleanup();
     $("#rStart").disabled = false; $("#rStop").disabled = true;
   }
-});
+}
+$("#rStart").addEventListener("click", () => { if (readyToTrain()) runExercise(); });
+
+/** "Tập đủ 6 bài": web dẫn lần lượt từng bài, mỗi bài xong tự lưu */
+async function runAll() {
+  if (!readyToTrain()) return;
+  if (RUN && !RUN.done) return toast("Đang có bài tập chạy");
+  show("train");
+  for (let k = 0; k < ACTIVE_EX.length; k++) {
+    const key = ACTIVE_EX[k];
+    openRunner(EX[key]);
+    $("#rTag").textContent = `BÀI ${k + 1}/${ACTIVE_EX.length} · MÔ-ĐUN ${EX[key].n}`;
+    const ok = await runExercise();
+    if (!ok) { toast("Đã dừng buổi tập. Các bài làm xong trước đó vẫn được lưu."); return; }
+    if (k < ACTIVE_EX.length - 1) {
+      const next = EX[ACTIVE_EX[k + 1]];
+      RUN = { ex: EX[key], abort: false, done: false };
+      $("#rStop").disabled = false;
+      try { await phase(`Nghỉ — bài tiếp: ${next.ico} ${next.title}`, 8); } catch { $("#rStop").disabled = true; toast("Đã dừng buổi tập. Các bài làm xong vẫn được lưu."); RUN.done = true; return; }
+      RUN.done = true;
+    }
+  }
+  toast("🎉 Xong cả 6 bài! Vào Trợ lý AI để nhận lời khuyên.", 5000);
+}
+$$(".btn-runall").forEach((b) => b.addEventListener("click", runAll));
 
 function setPhase(t) { $("#rPhase").textContent = t; }
 function setProg(f) { $("#rProg").style.width = `${clamp(f, 0, 1) * 100}%`; }
@@ -635,9 +667,10 @@ async function finish(ex, res) {
   box.innerHTML = `<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap"><div class="rs-score">${res.score} điểm</div><div class="muted">${esc(res.summary)}</div></div>${res.table}`;
   try {
     await api("/api/sessions", { body: { patient_id: S.pid, exercise: ex.key, started: RUN.t0, ended: Date.now() / 1000, score: res.score, metrics: res.metrics } });
-    box.insertAdjacentHTML("beforeend", `<p class="muted small">✔ Đã lưu vào hồ sơ${demo() ? " (dữ liệu mô phỏng)" : ""}. <a data-goto="ai">Nhờ AI phân tích →</a></p>`);
+    box.insertAdjacentHTML("beforeend", `<p class="small ok-line">✔ Đã lưu vào hồ sơ của <b>${esc(S.patients.find((p) => p.id === S.pid)?.name || "")}</b>. <a data-goto="ai">Nhờ AI phân tích →</a></p>`);
     await refreshPatientData();
-  } catch (err) { box.insertAdjacentHTML("beforeend", `<p class="flag">Không lưu được: ${esc(err.message)}</p>`); }
+    return true;
+  } catch (err) { box.insertAdjacentHTML("beforeend", `<p class="flag">Không lưu được: ${esc(err.message)}</p>`); return false; }
 }
 
 const RUNNERS = {

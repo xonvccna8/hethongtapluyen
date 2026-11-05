@@ -262,3 +262,9 @@ select:focus, input:focus, textarea:focus { outline: 2px solid #9cc4f5; border-c
 .login-card { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 10px; }
 
 .top-right .btn { white-space: nowrap; }
+
+.train-help { display: flex; gap: 14px; align-items: center; justify-content: space-between; margin-bottom: 16px; border-left: 6px solid var(--blue); font-size: 14px; line-height: 1.5; }
+.train-help .btn { flex: none; }
+.ok-line { color: var(--green); font-weight: 600; }
+.today-card .btn.wide + .btn.wide { margin-top: 6px; }
+@media (max-width: 820px) { .train-help { flex-direction: column; align-items: stretch; } }
