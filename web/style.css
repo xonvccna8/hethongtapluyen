@@ -153,7 +153,7 @@ select:focus, input:focus, textarea:focus { outline: 2px solid #9cc4f5; border-c
 .runner-head { display: flex; justify-content: space-between; align-items: start; }
 .runner-head h2 { margin: 2px 0 0; color: var(--c); }
 .runner-tag { font-size: 12px; font-weight: 800; color: var(--muted); letter-spacing: .5px; }
-.runner-body { display: grid; grid-template-columns: 1fr 260px; gap: 16px; }
+.runner-body { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; }
 .stage { background: #f4f8fc; border-radius: 14px; min-height: 300px; padding: 14px; position: relative; }
 .runner-side { display: flex; flex-direction: column; gap: 8px; }
 .phase { font-size: 22px; font-weight: 900; color: var(--c); }
@@ -179,10 +179,12 @@ select:focus, input:focus, textarea:focus { outline: 2px solid #9cc4f5; border-c
 .track { position: relative; height: 70px; background: #e3edf8; border-radius: 14px; margin: 70px 10px 20px; }
 .track .tgt { position: absolute; top: -12px; width: 10px; height: 94px; margin-left: -5px; background: rgba(229, 72, 72, .25); border: 2px solid #e54848; border-radius: 6px; }
 .track .you { position: absolute; top: 12px; width: 46px; height: 46px; margin-left: -23px; border-radius: 12px; background: var(--c); box-shadow: 0 4px 10px rgba(0,0,0,.2); }
-.game-leds { display: flex; justify-content: center; gap: 26px; margin-top: 50px; }
-.game-led { width: 84px; height: 84px; border-radius: 50%; border: 4px solid #c9d6e3; background: #f1f4f8; display: grid; place-items: center; font-weight: 900; font-size: 22px; color: #9fb0c2; transition: all .08s; }
-.game-led.on { color: #fff; transform: scale(1.08); }
-.game-msg { text-align: center; font-size: 20px; font-weight: 800; margin-top: 24px; min-height: 30px; }
+/* 4 đèn co giãn theo bề ngang: máy tính 84px, điện thoại tự nhỏ lại, luôn tròn và nằm trên 1 hàng như trên board */
+.game-leds { display: grid; grid-template-columns: repeat(4, minmax(0, 84px)); justify-content: center; gap: clamp(10px, 4vw, 26px); margin-top: 50px; }
+.game-led { --lc: #c9d6e3; width: 100%; aspect-ratio: 1; border-radius: 50%; border: 4px solid var(--lc); background: #f1f4f8;
+  box-shadow: inset 0 -4px 0 rgba(0, 0, 0, .06); display: grid; place-items: center; font-weight: 900; font-size: clamp(17px, 5vw, 22px); color: #9fb0c2; transition: all .08s; }
+.game-led.on { color: #fff; background: var(--lc); transform: scale(1.08); box-shadow: 0 0 0 5px #fff, 0 0 22px var(--lc); }
+.game-msg { text-align: center; font-size: 20px; font-weight: 800; margin-top: 24px; min-height: 30px; overflow-wrap: anywhere; }
 
 /* AI */
 .ai-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
@@ -240,7 +242,17 @@ select:focus, input:focus, textarea:focus { outline: 2px solid #9cc4f5; border-c
   main { padding: 14px 16px 30px; }
   .g-overview, .g-2, .g-ex { grid-template-columns: 1fr; }
   .g-overview .live-card { grid-column: auto; }
-  .runner-body { grid-template-columns: 1fr; }
+  .runner-body { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .runner-head h2 { font-size: 21px; }
+  .stage { min-height: 0; padding: 12px 10px 16px; }
+  /* bảng điều khiển bài tập: pha bên trái, số đếm bên phải, nút to chiếm cả hàng */
+  .runner-side { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 12px; }
+  .phase { font-size: 18px; line-height: 1.25; }
+  .count { font-size: 44px; text-align: right; }
+  .runner-side .progress, .runner-btns { grid-column: 1 / -1; }
+  .runner-btns .btn { flex: 1; padding: 13px 14px; font-size: 16px; }
+  .game-leds { margin-top: 26px; }
+  .game-msg { font-size: 17px; margin-top: 20px; }
   .live-forces { grid-template-columns: repeat(3, 1fr); }
   .live-row { grid-template-columns: 1fr; }
   .form-row { grid-template-columns: 1fr; }

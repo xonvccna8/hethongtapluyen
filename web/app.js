@@ -943,8 +943,8 @@ const RUNNERS = {
   game: {
     trials: 12,
     howto() { return "Khi một đèn sáng (kèm tiếng bíp), nhấn NGAY nút cùng màu trên board. 12 lượt. Đừng nhấn trước khi đèn sáng."; },
-    stage() { $("#rStage").innerHTML = `<div class="game-leds">${[0, 1, 2, 3].map((k) => `<div class="game-led" id="gl${k}" style="border-color:${LED_COLORS[k]}">${k + 1}</div>`).join("")}</div><div class="game-msg" id="gMsg">Nhìn đèn trên board hoặc trên màn hình</div>`; },
-    light(k, on) { const e = $(`#gl${k}`); if (e) { e.classList.toggle("on", on); e.style.background = on ? LED_COLORS[k] : ""; } },
+    stage() { $("#rStage").innerHTML = `<div class="game-leds">${[0, 1, 2, 3].map((k) => `<div class="game-led" id="gl${k}" style="--lc:${LED_COLORS[k]}">${k + 1}</div>`).join("")}</div><div class="game-msg" id="gMsg">Nhìn đèn trên board hoặc trên màn hình</div>`; },
+    light(k, on) { const e = $(`#gl${k}`); if (e) e.classList.toggle("on", on); },
     cleanup() { cmd("LEDS AUTO"); for (let k = 0; k < 4; k++) RUNNERS.game.light(k, false); },
     async run() {
       for (let k = 1; k <= 4; k++) cmd(`LED ${k} 0`);
