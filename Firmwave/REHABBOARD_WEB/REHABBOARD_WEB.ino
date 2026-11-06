@@ -149,13 +149,27 @@ class BleCmdCallbacks : public NimBLECharacteristicCallbacks {
   }
 } bleCmdCallbacks;
 
+// Đã có 1 thiết bị nối (vd app điện thoại) -> VẪN phát sóng để thiết bị thứ 2 (web trên laptop) tìm thấy board.
+// Trước đây board ngừng phát khi có kết nối: điện thoại quên ngắt là laptop báo "không tìm thấy thiết bị".
+// Tối đa BLE_MAX_CLIENTS thiết bị cùng lúc, cùng nhận dữ liệu (notify gửi cho mọi thiết bị đang nghe).
+#define BLE_MAX_CLIENTS 2
+class BleServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer* s, NimBLEConnInfo&) override {
+    if (s->getConnectedCount() < BLE_MAX_CLIENTS) NimBLEDevice::startAdvertising();
+  }
+  void onDisconnect(NimBLEServer* s, NimBLEConnInfo&, int) override {
+    NimBLEDevice::startAdvertising();  // còn chỗ -> phát lại ngay
+  }
+} bleServerCallbacks;
+
 void startBle() {
   NimBLEDevice::init(BLE_NAME);
   // Công suất phát thấp (0 dBm, đủ vài mét): bật sóng ở mức cao làm sụt áp nguồn USB -> board tự khởi động lại
   NimBLEDevice::setPower(-6);
   NimBLEDevice::setMTU(185);
   bleServer = NimBLEDevice::createServer();
-  bleServer->advertiseOnDisconnect(true);
+  bleServer->advertiseOnDisconnect(false);  // tự lo trong BleServerCallbacks
+  bleServer->setCallbacks(&bleServerCallbacks, false);
   NimBLEService* svc = bleServer->createService(BLE_SVC_UUID);
   bleData = svc->createCharacteristic(BLE_DATA_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
   bleEvt = svc->createCharacteristic(BLE_EVT_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
@@ -465,11 +479,15 @@ void updateDisplay() {
     snprintf(buf, sizeof(buf), "HX711: %d/6 OK ", hx);
     textAt(COL2_X, 152, buf, hx == NUM_CELLS ? ILI9341_GREEN : ILI9341_RED);
   }
-  int ble = bleConnected() ? 1 : 0;
+  int ble = bleServer ? bleServer->getConnectedCount() : 0;  // số thiết bị đang nối
   if (ble != shownBle) {
     shownBle = ble;
     if (bleSkipped) textAt(COL2_X, 166, "BLE: TAT (sut ap)", ILI9341_RED);
-    else textAt(COL2_X, 166, ble ? "BLE: DA KET NOI  " : "BLE: cho ket noi ", ble ? ILI9341_GREEN : ILI9341_YELLOW);
+    else if (!ble) textAt(COL2_X, 166, "BLE: cho ket noi ", ILI9341_YELLOW);
+    else {
+      snprintf(buf, sizeof(buf), "BLE: %d thiet bi  ", ble);
+      textAt(COL2_X, 166, buf, ILI9341_GREEN);
+    }
   }
 
   for (int i = 0; i < NUM_GAME; i++) {

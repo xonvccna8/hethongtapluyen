@@ -1,0 +1,25 @@
+{
+  "appId": "vn.rehabboard.ai",
+  "appName": "RehabBoard AI",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#eef4fb"
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css",
+      "initialViewportFitValueHint": "cover"
+    },
+    "CapacitorHttp": {
+      "enabled": true
+    },
+    "BluetoothLe": {
+      "displayStrings": {
+        "scanning": "Đang tìm board…",
+        "cancel": "Huỷ",
+        "availableDevices": "Chọn board RehabBoard",
+        "noDeviceFound": "Không thấy board — board phải đang bật Bluetooth (màn TFT: \"BLE: cho ket noi\")"
+      }
+    }
+  }
+}
